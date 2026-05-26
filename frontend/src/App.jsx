@@ -36,7 +36,7 @@ export default function App() {
     setResult(null)
     try {
       const selectedCards = cards.filter((_, i) => activeCards.includes(i))
-      const res = await fetch("http://localhost:8000/recommend", {
+      const res = await fetch("https://cardmax-backend.onrender.com/recommend", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
