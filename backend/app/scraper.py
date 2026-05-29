@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime
 
-load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
+load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=True)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
