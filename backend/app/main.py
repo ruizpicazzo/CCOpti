@@ -44,12 +44,16 @@ class RecommendRequest(BaseModel):
     purchase_description: str
     amount: float
 
-class RecommendResponse(BaseModel):
-    best_card: str
+class RankedOption(BaseModel):
+    card_name: str
     bank: str
     reason: str
     estimated_cashback: float
     promo_alert: Optional[str] = None
+    is_best: bool = False
+
+class RecommendResponse(BaseModel):
+    recommendations: List[RankedOption]
 
 # --- Sample card data (Mexico market) ---
 
@@ -138,30 +142,44 @@ The user wants to make this purchase: "{request.purchase_description}" for ${req
 Their available credit cards are:
 {cards_summary}
 
-Analyze which card gives the best benefit for this specific purchase. Consider:
+Rank ALL cards from best to worst for this specific purchase. Consider:
 1. The cashback percentage for the relevant category
 2. Any active promotions that apply
 3. The estimated cashback in MXN pesos
 
-Respond in this exact JSON format with no extra text, no markdown, no backticks:
-{{
-  "best_card": "card name",
-  "bank": "bank name",
-  "reason": "brief explanation in Spanish (1-2 sentences)",
-  "estimated_cashback": numeric_value,
-  "promo_alert": "promo text if applicable, otherwise null"
-}}"""
+Respond with ONLY a JSON array, no markdown, no backticks, no extra text:
+[
+  {{
+    "card_name": "card name",
+    "bank": "bank name",
+    "reason": "brief explanation in Spanish (1 sentence)",
+    "estimated_cashback": numeric_value,
+    "promo_alert": "promo text if applicable, otherwise null",
+    "is_best": true
+  }},
+  {{
+    "card_name": "second best card",
+    "bank": "bank name",
+    "reason": "brief explanation in Spanish (1 sentence)",
+    "estimated_cashback": numeric_value,
+    "promo_alert": null,
+    "is_best": false
+  }}
+]
+
+Set is_best to true ONLY for the first (best) option. Include every card provided."""
 
     message = client.messages.create(
         model="claude-sonnet-4-5",
-        max_tokens=500,
+        max_tokens=1500,
         messages=[{"role": "user", "content": prompt}]
     )
 
     response_text = message.content[0].text.strip()
-    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+    response_text = re.sub(r'```[a-zA-Z]*\s*', '', response_text).replace('```', '').strip()
+    json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
     if not json_match:
         raise HTTPException(status_code=500, detail="Could not parse AI response")
-    result = json.loads(json_match.group())
+    ranked = json.loads(json_match.group())
 
-    return RecommendResponse(**result)
+    return RecommendResponse(recommendations=[RankedOption(**r) for r in ranked])

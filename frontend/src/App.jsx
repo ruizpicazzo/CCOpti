@@ -142,25 +142,57 @@ export default function App() {
             </div>
 
             {result && (
-              <div style={{ background: "#fff", borderRadius: 16, padding: 28, marginBottom: 20, boxShadow: "0 2px 12px rgba(0,0,0,0.06)", borderLeft: `5px solid ${BANK_COLORS[result.bank] || "#1a1a2e"}` }}>
-                <div style={{ fontSize: 12, color: "#888", marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>Recomendación de CardMax</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-                  <span style={{ fontSize: 30 }}>🏆</span>
-                  <div>
-                    <div style={{ fontSize: 20, fontWeight: 700 }}>{result.best_card}</div>
-                    <div style={{ fontSize: 13, color: "#888" }}>{result.bank}</div>
-                  </div>
-                  <div style={{ marginLeft: "auto", textAlign: "right" }}>
-                    <div style={{ fontSize: 26, fontWeight: 700, color: "#16a34a" }}>${result.estimated_cashback}</div>
-                    <div style={{ fontSize: 12, color: "#888" }}>cashback estimado</div>
-                  </div>
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 13, color: "#888", marginBottom: 14, textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>
+                  Resultados — {result.recommendations.length} tarjetas comparadas
                 </div>
-                <div style={{ background: "#f9f9f9", borderRadius: 10, padding: "12px 16px", fontSize: 14, color: "#444", marginBottom: result.promo_alert ? 10 : 0 }}>{result.reason}</div>
-                {result.promo_alert && (
-                  <div style={{ background: "#fef9c3", borderRadius: 10, padding: "10px 16px", fontSize: 13, color: "#854d0e", marginTop: 10 }}>
-                    🔥 <strong>Promo activa:</strong> {result.promo_alert}
-                  </div>
-                )}
+                {result.recommendations.map((r, i) => {
+                  const color = BANK_COLORS[r.bank] || "#1a1a2e"
+                  return (
+                    <div key={i} style={{
+                      background: r.is_best ? "#fff" : "#fafafa",
+                      borderRadius: 16,
+                      padding: 24,
+                      marginBottom: 10,
+                      boxShadow: r.is_best ? "0 4px 20px rgba(0,0,0,0.10)" : "0 2px 8px rgba(0,0,0,0.04)",
+                      borderLeft: `5px solid ${r.is_best ? color : "#e0e0e0"}`,
+                      opacity: r.is_best ? 1 : 0.75,
+                      position: "relative"
+                    }}>
+                      {r.is_best && (
+                        <div style={{
+                          position: "absolute", top: -10, right: 16,
+                          background: "#1a1a2e", color: "#fff",
+                          fontSize: 11, fontWeight: 700, padding: "3px 12px",
+                          borderRadius: 99, letterSpacing: 0.5
+                        }}>
+                          ★ MEJOR OPCIÓN
+                        </div>
+                      )}
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                        <span style={{ fontSize: r.is_best ? 28 : 20 }}>{r.is_best ? "🏆" : `#${i + 1}`}</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: r.is_best ? 18 : 15, fontWeight: 700 }}>{r.card_name}</div>
+                          <div style={{ fontSize: 13, color: "#888" }}>{r.bank}</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: r.is_best ? 24 : 18, fontWeight: 700, color: r.is_best ? "#16a34a" : "#555" }}>
+                            ${r.estimated_cashback.toFixed(2)}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#aaa" }}>cashback est.</div>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 13, color: "#555", lineHeight: 1.5, marginBottom: r.promo_alert ? 8 : 0 }}>
+                        {r.reason}
+                      </div>
+                      {r.promo_alert && (
+                        <div style={{ background: "#fef9c3", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#854d0e", marginTop: 8 }}>
+                          🔥 <strong>Promo:</strong> {r.promo_alert}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
 
