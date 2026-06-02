@@ -25,6 +25,16 @@ BBVA_URLS = [
     {"url": "https://www.bbvadescuentos.mx/categorias/salud", "category": "general"},
 ]
 
+HSBC_CATEGORIES = [
+    {"slug": "compras",              "category": "general"},
+    {"slug": "entretenimiento",      "category": "entertainment"},
+    {"slug": "fast-food",            "category": "dining"},
+    {"slug": "viajes",               "category": "travel"},
+    {"slug": "visa",                 "category": "general"},
+    {"slug": "servicios",            "category": "general"},
+    {"slug": "meses-sin-intereses",  "category": "general"},
+]
+
 BANK_SOURCES = [
     {"bank": "Klar", "url": "https://www.klar.mx/promociones", "card_name": "Klar Card", "wait": 3000},
     {"bank": "Nu Mexico", "url": "https://nu.com.mx/promociones/", "card_name": "Nu Card", "wait": 3000},
@@ -294,6 +304,63 @@ def scrape_banorte() -> list:
         print(f"Banorte scraper error: {type(e).__name__}")
         return []
 
+def scrape_hsbc_category(page, slug: str, category: str) -> list:
+    """Scrape one HSBC category, paginating through all pages by clicking Next."""
+    base_url = f"https://promociones.programa-mas.com.mx/busqueda/{slug}"
+    page.goto(base_url, wait_until="domcontentloaded", timeout=30000)
+    page.wait_for_timeout(3000)
+
+    all_text = ""
+    page_num = 1
+    while True:
+        text = page.inner_text("body")
+        # Strip nav/footer noise — promos start after the category filter block
+        start = text.find("Limpiar")
+        chunk = text[start:start + 4000] if start > 0 else text[:4000]
+        all_text += f"\n--- Página {page_num} ---\n{chunk}"
+
+        # Check for a non-disabled Next button
+        next_btn = page.locator("ngb-pagination li.page-item:not(.disabled) a[aria-label='Next']")
+        if next_btn.count() == 0:
+            break
+        next_btn.click()
+        page.wait_for_timeout(2000)
+        page_num += 1
+        if page_num > 10:   # safety cap
+            break
+
+    print(f"    [{slug}] {page_num} page(s), {len(all_text)} chars")
+    promos = extract_promos_with_claude(all_text[:15000], "HSBC", "2Now / Advance / Débito")
+    for promo in promos:
+        promo["category"] = category
+    return promos
+
+
+def scrape_hsbc() -> list:
+    """Scrape all HSBC promo categories, paginating each one."""
+    all_promos = []
+    seen = set()
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_extra_http_headers({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            for source in HSBC_CATEGORIES:
+                print(f"  Scraping HSBC [{source['slug']}]...")
+                promos = scrape_hsbc_category(page, source["slug"], source["category"])
+                for promo in promos:
+                    key = str(promo.get("merchant", "")).strip().lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        all_promos.append(promo)
+            browser.close()
+    except Exception as e:
+        print(f"HSBC scraper error: {type(e).__name__} — {e}")
+    return all_promos
+
+
 def scrape_bbva() -> list:
     """Scrape BBVA across multiple category pages and combine results."""
     all_promos = []
@@ -326,6 +393,12 @@ def run_scraper():
     banamex_promos = scrape_banamex()
     save_promos(banamex_promos, "Citibanamex", "Simplicity / Costco", "https://www.banamex.com/sitios/promociones/filtro.html")
     print(f"Citibanamex total: {len(banamex_promos)} promos")
+
+    # HSBC — multi-category + pagination scraper
+    print("Scraping HSBC...")
+    hsbc_promos = scrape_hsbc()
+    save_promos(hsbc_promos, "HSBC", "2Now / Advance / Débito", "https://promociones.programa-mas.com.mx/")
+    print(f"HSBC total: {len(hsbc_promos)} promos")
 
     # Banorte — clicks "Cargar más.." to load all promos
     print("Scraping Banorte...")
