@@ -10,7 +10,7 @@ import os
 import json
 import re
 
-load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
+load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=True)
 
 app = FastAPI(
     title="CardMax MX API",
