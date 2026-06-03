@@ -12,6 +12,8 @@ const BANK_COLORS = {
   "Santander": "#EC0000",
   "American Express": "#016FD0",
   "Klar": "#6C1FFF",
+  "Mercado Pago": "#009EE3",
+  "Santander": "#EC0000",
 }
 
 const CATEGORY_ICONS = {
@@ -26,6 +28,7 @@ const SAMPLE_CARDS = [
   { name: "Simplicity", bank: "Citibanamex", cashback_general: 0.0, cashback_supermarket: 3.0, cashback_gas: 0.0, cashback_dining: 2.0, cashback_online: 2.0, active_promo: "5% de bonificacion en Walmart y Superama" },
   { name: "Rappi Card", bank: "Rappi x Banorte", cashback_general: 1.5, cashback_supermarket: 2.0, cashback_gas: 1.0, cashback_dining: 3.0, cashback_online: 2.0, active_promo: "10% en pedidos Rappi los viernes" },
   { name: "Klar Card", bank: "Klar", cashback_general: 1.0, cashback_supermarket: 1.5, cashback_gas: 1.0, cashback_dining: 1.5, cashback_online: 2.0, active_promo: "15% cashback en Amazon y Mercado Libre" },
+  { name: "Mercado Pago Card", bank: "Mercado Pago", cashback_general: 1.0, cashback_supermarket: 1.0, cashback_gas: 1.0, cashback_dining: 1.0, cashback_online: 3.0, active_promo: "3% cashback en compras en Mercado Libre" },
 ]
 
 export default function App() {

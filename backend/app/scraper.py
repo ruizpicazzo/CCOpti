@@ -40,6 +40,7 @@ BANK_SOURCES = [
     {"bank": "Nu Mexico", "url": "https://nu.com.mx/promociones/", "card_name": "Nu Card", "wait": 3000},
     {"bank": "Banorte", "url": "https://www.banorte.com/wps/portal/banorte/home/para-ti/tarjetas/credito", "card_name": "Banorte Visa", "wait": 2000},
     {"bank": "HSBC", "url": "https://www.hsbc.com.mx/tarjetas-de-credito/", "card_name": "HSBC 2Now / Advance", "wait": 2000},
+    {"bank": "Mercado Pago", "url": "https://www.mercadopago.com.mx/credit-card", "card_name": "Mercado Pago Card", "wait": 3000},
     {"bank": "Santander", "url": "https://www.santander.com.mx/personas/tarjetas/credito.html", "card_name": "Santander Zero / LikeU", "wait": 2000},
     {"bank": "American Express", "url": "https://www.americanexpress.com/es-mx/tarjetas-de-credito/", "card_name": "Gold / Platinum / Green", "wait": 2000},
 ]
@@ -304,6 +305,55 @@ def scrape_banorte() -> list:
         print(f"Banorte scraper error: {type(e).__name__}")
         return []
 
+def scrape_amex() -> list:
+    """Scrape American Express public promo page, cycling through carousel slides."""
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_extra_http_headers({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            })
+            page.goto("https://www.americanexpress.com/es-mx/beneficios/promociones/",
+                      wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(5000)
+
+            seen_slides = set()
+            all_text = ""
+
+            # Cycle through carousel slides
+            for _ in range(12):
+                text = page.inner_text("body")
+                idx = text.find("Offers Carousel")
+                if idx > 0:
+                    chunk = text[idx:idx+600]
+                    if chunk not in seen_slides:
+                        seen_slides.add(chunk)
+                        all_text += chunk + "\n"
+                try:
+                    next_btn = page.locator("[aria-label='Next'], button:has-text('Next')").first
+                    if next_btn.is_visible(timeout=1000):
+                        next_btn.click()
+                        page.wait_for_timeout(1500)
+                    else:
+                        break
+                except Exception:
+                    break
+
+            # Also grab Multi-Card Carousel section
+            full_text = page.inner_text("body")
+            idx2 = full_text.find("Multi-Card Carousel")
+            if idx2 > 0:
+                all_text += full_text[idx2:idx2+1000]
+
+            browser.close()
+            print(f"  Amex collected {len(all_text)} chars, {len(seen_slides)} unique slides")
+            return extract_promos_with_claude(all_text, "American Express", "Gold / Platinum / Green")
+    except Exception as e:
+        print(f"Amex scraper error: {type(e).__name__}")
+        return []
+
+
 def scrape_hsbc_category(page, slug: str, category: str) -> list:
     """Scrape one HSBC category, paginating through all pages by clicking Next."""
     base_url = f"https://promociones.programa-mas.com.mx/busqueda/{slug}"
@@ -393,6 +443,12 @@ def run_scraper():
     banamex_promos = scrape_banamex()
     save_promos(banamex_promos, "Citibanamex", "Simplicity / Costco", "https://www.banamex.com/sitios/promociones/filtro.html")
     print(f"Citibanamex total: {len(banamex_promos)} promos")
+
+    # American Express — carousel scraper (public promos only)
+    print("Scraping American Express...")
+    amex_promos = scrape_amex()
+    save_promos(amex_promos, "American Express", "Gold / Platinum / Green", "https://www.americanexpress.com/es-mx/beneficios/promociones/")
+    print(f"American Express total: {len(amex_promos)} promos")
 
     # HSBC — multi-category + pagination scraper
     print("Scraping HSBC...")
