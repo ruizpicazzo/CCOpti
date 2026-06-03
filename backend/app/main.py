@@ -1,20 +1,13 @@
 from fastapi import FastAPI, HTTPException
 from app.routers import promos
+from app import recommendation
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from pathlib import Path
 from dotenv import load_dotenv
-import anthropic
-import os
-import json
-import re
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=True)
-
-# Cheap model for the recommendation task (cashback ranking is simple).
-# Bump to "claude-sonnet-4-5" if you want richer reasoning.
-RECOMMEND_MODEL = "claude-haiku-4-5"
 
 app = FastAPI(
     title="CardMax MX API",
@@ -44,15 +37,19 @@ class CreditCard(BaseModel):
     active_promo: Optional[str] = None
 
 class RecommendRequest(BaseModel):
-    cards: List[CreditCard]
-    purchase_description: str
-    amount: float
+    cards: List[CreditCard] = Field(..., min_length=1, max_length=50)
+    purchase_description: str = Field(..., min_length=1, max_length=200)
+    amount: float = Field(..., gt=0, le=1_000_000)
 
 class RankedOption(BaseModel):
     card_name: str
     bank: str
     reason: str
     estimated_cashback: float
+    benefit_type: str = "none"          # cashback | descuento | msi | info | none
+    matched_promo: Optional[str] = None
+    merchant: Optional[str] = None
+    category: Optional[str] = None
     promo_alert: Optional[str] = None
     is_best: bool = False
 
@@ -124,66 +121,18 @@ def get_sample_cards():
 
 @app.post("/recommend", response_model=RecommendResponse)
 def recommend_card(request: RecommendRequest):
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="API key not configured")
+    """Rank the user's cards by the EXACT monetary benefit for this purchase.
 
-    client = anthropic.Anthropic(api_key=api_key)
-
-    cards_summary = ""
-    for card in request.cards:
-        cards_summary += f"""
-- {card.name} ({card.bank}):
-  General: {card.cashback_general}% | Supermarket: {card.cashback_supermarket}% |
-  Gas: {card.cashback_gas}% | Dining: {card.cashback_dining}% | Online: {card.cashback_online}%
-  Active promo: {card.active_promo or 'None'}
-"""
-
-    prompt = f"""You are CardMax, a credit card optimization assistant for Mexican consumers.
-
-The user wants to make this purchase: "{request.purchase_description}" for ${request.amount} MXN.
-
-Their available credit cards are:
-{cards_summary}
-
-Rank ALL cards from best to worst for this specific purchase. Consider:
-1. The cashback percentage for the relevant category
-2. Any active promotions that apply
-3. The estimated cashback in MXN pesos
-
-Respond with ONLY a JSON array, no markdown, no backticks, no extra text:
-[
-  {{
-    "card_name": "card name",
-    "bank": "bank name",
-    "reason": "brief explanation in Spanish (1 sentence)",
-    "estimated_cashback": numeric_value,
-    "promo_alert": "promo text if applicable, otherwise null",
-    "is_best": true
-  }},
-  {{
-    "card_name": "second best card",
-    "bank": "bank name",
-    "reason": "brief explanation in Spanish (1 sentence)",
-    "estimated_cashback": numeric_value,
-    "promo_alert": null,
-    "is_best": false
-  }}
-]
-
-Set is_best to true ONLY for the first (best) option. Include every card provided."""
-
-    message = client.messages.create(
-        model=RECOMMEND_MODEL,
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    response_text = message.content[0].text.strip()
-    response_text = re.sub(r'```[a-zA-Z]*\s*', '', response_text).replace('```', '').strip()
-    json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
-    if not json_match:
-        raise HTTPException(status_code=500, detail="Could not parse AI response")
-    ranked = json.loads(json_match.group())
-
-    return RecommendResponse(recommendations=[RankedOption(**r) for r in ranked])
+    The LLM only classifies the purchase (category + merchant). All money math
+    is computed deterministically in app.recommendation against live promos.
+    """
+    try:
+        cards = [c.model_dump() for c in request.cards]
+        ranked = recommendation.recommend(
+            cards, request.purchase_description, request.amount
+        )
+        return RecommendResponse(
+            recommendations=[RankedOption(**r) for r in ranked]
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Recommendation failed: {e}")

@@ -146,11 +146,26 @@ export default function App() {
 
             {result && (
               <div style={{ marginBottom: 20 }}>
-                <div style={{ fontSize: 13, color: "#888", marginBottom: 14, textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>
+                <div style={{ fontSize: 13, color: "#888", marginBottom: 6, textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>
                   Resultados — {result.recommendations.length} tarjetas comparadas
                 </div>
+                {result.recommendations[0]?.merchant || result.recommendations[0]?.category ? (
+                  <div style={{ fontSize: 12, color: "#888", marginBottom: 14 }}>
+                    Compra detectada:{" "}
+                    <strong>{result.recommendations[0].merchant || "—"}</strong>
+                    {result.recommendations[0].category ? ` · ${result.recommendations[0].category}` : ""}
+                  </div>
+                ) : null}
                 {result.recommendations.map((r, i) => {
                   const color = BANK_COLORS[r.bank] || "#1a1a2e"
+                  const benefit = Number(r.estimated_cashback || 0)
+                  const BENEFIT_BADGE = {
+                    cashback: { label: "Cashback", bg: "#dcfce7", fg: "#16a34a" },
+                    descuento: { label: "Descuento", bg: "#dbeafe", fg: "#1d4ed8" },
+                    msi: { label: "Meses sin intereses", bg: "#fef9c3", fg: "#854d0e" },
+                    info: { label: "Promo aplicable", bg: "#f3e8ff", fg: "#7e22ce" },
+                  }
+                  const badge = BENEFIT_BADGE[r.benefit_type]
                   return (
                     <div key={i} style={{
                       background: r.is_best ? "#fff" : "#fafafa",
@@ -175,22 +190,29 @@ export default function App() {
                       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
                         <span style={{ fontSize: r.is_best ? 28 : 20 }}>{r.is_best ? "🏆" : `#${i + 1}`}</span>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: r.is_best ? 18 : 15, fontWeight: 700 }}>{r.card_name}</div>
+                          <div style={{ fontSize: r.is_best ? 18 : 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+                            {r.card_name}
+                            {badge && benefit > 0 && (
+                              <span style={{ background: badge.bg, color: badge.fg, fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 99 }}>
+                                {badge.label}
+                              </span>
+                            )}
+                          </div>
                           <div style={{ fontSize: 13, color: "#888" }}>{r.bank}</div>
                         </div>
                         <div style={{ textAlign: "right" }}>
-                          <div style={{ fontSize: r.is_best ? 24 : 18, fontWeight: 700, color: r.is_best ? "#16a34a" : "#555" }}>
-                            ${r.estimated_cashback.toFixed(2)}
+                          <div style={{ fontSize: r.is_best ? 24 : 18, fontWeight: 700, color: benefit > 0 ? (r.is_best ? "#16a34a" : "#555") : "#bbb" }}>
+                            ${benefit.toFixed(2)}
                           </div>
-                          <div style={{ fontSize: 11, color: "#aaa" }}>cashback est.</div>
+                          <div style={{ fontSize: 11, color: "#aaa" }}>beneficio est.</div>
                         </div>
                       </div>
-                      <div style={{ fontSize: 13, color: "#555", lineHeight: 1.5, marginBottom: r.promo_alert ? 8 : 0 }}>
+                      <div style={{ fontSize: 13, color: "#555", lineHeight: 1.5, marginBottom: r.matched_promo ? 8 : 0 }}>
                         {r.reason}
                       </div>
-                      {r.promo_alert && (
+                      {r.matched_promo && (
                         <div style={{ background: "#fef9c3", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#854d0e", marginTop: 8 }}>
-                          🔥 <strong>Promo:</strong> {r.promo_alert}
+                          🔥 <strong>Promo:</strong> {r.matched_promo}
                         </div>
                       )}
                     </div>
