@@ -2,3 +2,7 @@
 venv/
 __pycache__/
 *.pyc
+scrape_cache.json
+test_*.py
+run_*.py
+seed_*.py

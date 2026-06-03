@@ -2,6 +2,7 @@ import anthropic
 import os
 import json
 import re
+import hashlib
 import httpx
 from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
@@ -13,6 +14,46 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=T
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+# Token optimization ---------------------------------------------------------
+# Extraction is a simple structured-output task → use cheap Haiku, not Sonnet.
+# (The user-facing /recommend endpoint keeps a smarter model.)
+EXTRACTION_MODEL = "claude-haiku-4-5"
+
+# Content-hash cache: if a bank's raw page text is identical to the last
+# successful run, skip the Claude extraction entirely (0 tokens spent).
+CACHE_FILE = Path(__file__).parent / "scrape_cache.json"
+# Set FORCE_REFRESH=1 to bypass the cache and re-extract everything.
+FORCE_REFRESH = os.getenv("FORCE_REFRESH") == "1"
+
+def _load_cache() -> dict:
+    try:
+        return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _save_cache(cache: dict):
+    try:
+        CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"Cache save error: {e}")
+
+def content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
+
+def is_unchanged(bank: str, raw_text: str) -> bool:
+    """True if raw page text matches the last successful run (→ skip Claude)."""
+    if FORCE_REFRESH or not raw_text:
+        return False
+    return _load_cache().get(bank) == content_hash(raw_text)
+
+def mark_scraped(bank: str, raw_text: str):
+    """Record the hash of successfully-processed page text."""
+    if not raw_text:
+        return
+    cache = _load_cache()
+    cache[bank] = content_hash(raw_text)
+    _save_cache(cache)
 
 BBVA_URLS = [
     {"url": "https://www.bbvadescuentos.mx/categorias/supermercados", "category": "supermarket"},
@@ -114,7 +155,7 @@ Si no hay promociones: []"""
 
     try:
         message = client.messages.create(
-            model="claude-sonnet-4-5",
+            model=EXTRACTION_MODEL,
             max_tokens=4000,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -155,7 +196,7 @@ Texto:
 
         try:
             message = client.messages.create(
-                model="claude-sonnet-4-5",
+                model=EXTRACTION_MODEL,
                 max_tokens=4000,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -259,7 +300,12 @@ def scrape_banamex() -> list:
             print(f"  Banamex total chars: {len(text)}")
             start = text.find('Resultados de Todo')
             promos_text = text[start:start+15000] if start > 0 else text[:15000]
-            return extract_banamex_promos(promos_text)
+            if is_unchanged("Citibanamex", promos_text):
+                print("  Citibanamex page unchanged — skipping extraction (0 tokens)")
+                return None
+            promos = extract_banamex_promos(promos_text)
+            mark_scraped("Citibanamex", promos_text)
+            return promos
     except Exception as e:
         print(f"Banamex scraper error: {e}")
         return []
@@ -300,7 +346,12 @@ def scrape_banorte() -> list:
             text = promo_frame.inner_text('body') if promo_frame else ''
             browser.close()
             print(f"  Banorte iframe total chars: {len(text)}")
-            return extract_banamex_promos(text)  # chunk-based extraction, same pattern
+            if is_unchanged("Banorte", text):
+                print("  Banorte page unchanged — skipping extraction (0 tokens)")
+                return None
+            promos = extract_banamex_promos(text)  # chunk-based extraction, same pattern
+            mark_scraped("Banorte", text)
+            return promos
     except Exception as e:
         print(f"Banorte scraper error: {type(e).__name__}")
         return []
@@ -348,14 +399,19 @@ def scrape_amex() -> list:
 
             browser.close()
             print(f"  Amex collected {len(all_text)} chars, {len(seen_slides)} unique slides")
-            return extract_promos_with_claude(all_text, "American Express", "Gold / Platinum / Green")
+            if is_unchanged("American Express", all_text):
+                print("  Amex page unchanged — skipping extraction (0 tokens)")
+                return None
+            promos = extract_promos_with_claude(all_text, "American Express", "Gold / Platinum / Green")
+            mark_scraped("American Express", all_text)
+            return promos
     except Exception as e:
         print(f"Amex scraper error: {type(e).__name__}")
         return []
 
 
-def scrape_hsbc_category(page, slug: str, category: str) -> list:
-    """Scrape one HSBC category, paginating through all pages by clicking Next."""
+def fetch_hsbc_category(page, slug: str) -> str:
+    """Fetch raw promo text for one HSBC category, paginating all pages (no tokens)."""
     base_url = f"https://promociones.programa-mas.com.mx/busqueda/{slug}"
     page.goto(base_url, wait_until="domcontentloaded", timeout=30000)
     page.wait_for_timeout(3000)
@@ -380,16 +436,17 @@ def scrape_hsbc_category(page, slug: str, category: str) -> list:
             break
 
     print(f"    [{slug}] {page_num} page(s), {len(all_text)} chars")
-    promos = extract_promos_with_claude(all_text[:15000], "HSBC", "2Now / Advance / Débito")
-    for promo in promos:
-        promo["category"] = category
-    return promos
+    return all_text
 
 
 def scrape_hsbc() -> list:
-    """Scrape all HSBC promo categories, paginating each one."""
-    all_promos = []
-    seen = set()
+    """Scrape all HSBC promo categories, paginating each one.
+
+    Returns None if every category is unchanged since the last run (skip save).
+    """
+    # Phase 1 — fetch all category texts (no Claude/tokens)
+    category_texts = []
+    combined = ""
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -398,79 +455,124 @@ def scrape_hsbc() -> list:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             })
             for source in HSBC_CATEGORIES:
-                print(f"  Scraping HSBC [{source['slug']}]...")
-                promos = scrape_hsbc_category(page, source["slug"], source["category"])
-                for promo in promos:
-                    key = str(promo.get("merchant", "")).strip().lower()
-                    if key and key not in seen:
-                        seen.add(key)
-                        all_promos.append(promo)
+                print(f"  Fetching HSBC [{source['slug']}]...")
+                raw = fetch_hsbc_category(page, source["slug"])
+                category_texts.append((source["category"], raw))
+                combined += raw
             browser.close()
     except Exception as e:
         print(f"HSBC scraper error: {type(e).__name__} — {e}")
+        return []
+
+    # Phase 2 — skip extraction entirely if nothing changed
+    if is_unchanged("HSBC", combined):
+        print("  HSBC pages unchanged — skipping extraction (0 tokens)")
+        return None
+
+    # Phase 3 — extract per category
+    all_promos = []
+    seen = set()
+    for category, raw in category_texts:
+        promos = extract_promos_with_claude(raw[:15000], "HSBC", "2Now / Advance / Débito")
+        for promo in promos:
+            promo["category"] = category
+            key = str(promo.get("merchant", "")).strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                all_promos.append(promo)
+    mark_scraped("HSBC", combined)
     return all_promos
 
 
 def scrape_bbva() -> list:
-    """Scrape BBVA across multiple category pages and combine results."""
-    all_promos = []
-    seen = set()
+    """Scrape BBVA across multiple category pages and combine results.
+
+    Returns None if all pages are unchanged since the last run (skip save).
+    """
+    # Phase 1 — fetch all category texts (no Claude/tokens)
+    category_texts = []
+    combined = ""
     for source in BBVA_URLS:
-        print(f"  Scraping BBVA {source['category']}...")
+        print(f"  Fetching BBVA {source['category']}...")
         text = scrape_page_playwright(source["url"], 3000)
         if not text or len(text) < 200:
             continue
+        category_texts.append((source["category"], text))
+        combined += text
+
+    # Phase 2 — skip extraction entirely if nothing changed
+    if is_unchanged("BBVA", combined):
+        print("  BBVA pages unchanged — skipping extraction (0 tokens)")
+        return None
+
+    # Phase 3 — extract per category
+    all_promos = []
+    seen = set()
+    for category, text in category_texts:
         promos = extract_promos_with_claude(text, "BBVA", "Azul / Oro / Platinum")
         for promo in promos:
             key = (promo.get("title", "").lower(), promo.get("merchant", ""))
             if key not in seen:
                 seen.add(key)
-                promo["category"] = source["category"]
+                promo["category"] = category
                 all_promos.append(promo)
+    mark_scraped("BBVA", combined)
     return all_promos
+
+# Banks NOT handled by the generic loop:
+#   Mercado Pago — promos are app-only, seeded manually (scraping would wipe them)
+#   Santander    — blocks scraping at the network level
+SKIP_BANKS = {"Mercado Pago", "Santander"}
+# Banks with their own dedicated scraper (run before the generic loop).
+# The generic card-listing URLs for these would overwrite good data.
+DEDICATED_BANKS = {"BBVA", "Citibanamex", "American Express", "HSBC", "Banorte"}
+
+def process(promos, bank: str, card_name: str, url: str):
+    """Save promos unless the page was unchanged (promos is None → leave DB alone)."""
+    if promos is None:
+        print(f"{bank}: sin cambios — base de datos intacta, 0 tokens")
+        return
+    save_promos(promos, bank, card_name, url)
+    print(f"{bank} total: {len(promos)} promos")
 
 def run_scraper():
     print(f"Starting scraper at {datetime.now()}")
+    if FORCE_REFRESH:
+        print("FORCE_REFRESH=1 — cache bypassed, re-extracting everything")
 
     # BBVA — multi-URL scraper
     print("Scraping BBVA (multi-category)...")
-    bbva_promos = scrape_bbva()
-    save_promos(bbva_promos, "BBVA", "Azul / Oro / Platinum", "https://www.bbvadescuentos.mx")
-    print(f"BBVA total: {len(bbva_promos)} promos")
+    process(scrape_bbva(), "BBVA", "Azul / Oro / Platinum", "https://www.bbvadescuentos.mx")
 
     # Citibanamex — clicks "Ver más" to load all promos
     print("Scraping Citibanamex...")
-    banamex_promos = scrape_banamex()
-    save_promos(banamex_promos, "Citibanamex", "Simplicity / Costco", "https://www.banamex.com/sitios/promociones/filtro.html")
-    print(f"Citibanamex total: {len(banamex_promos)} promos")
+    process(scrape_banamex(), "Citibanamex", "Simplicity / Costco", "https://www.banamex.com/sitios/promociones/filtro.html")
 
     # American Express — carousel scraper (public promos only)
     print("Scraping American Express...")
-    amex_promos = scrape_amex()
-    save_promos(amex_promos, "American Express", "Gold / Platinum / Green", "https://www.americanexpress.com/es-mx/beneficios/promociones/")
-    print(f"American Express total: {len(amex_promos)} promos")
+    process(scrape_amex(), "American Express", "Gold / Platinum / Green", "https://www.americanexpress.com/es-mx/beneficios/promociones/")
 
     # HSBC — multi-category + pagination scraper
     print("Scraping HSBC...")
-    hsbc_promos = scrape_hsbc()
-    save_promos(hsbc_promos, "HSBC", "2Now / Advance / Débito", "https://promociones.programa-mas.com.mx/")
-    print(f"HSBC total: {len(hsbc_promos)} promos")
+    process(scrape_hsbc(), "HSBC", "2Now / Advance / Débito", "https://promociones.programa-mas.com.mx/")
 
     # Banorte — clicks "Cargar más.." to load all promos
     print("Scraping Banorte...")
-    banorte_promos = scrape_banorte()
-    save_promos(banorte_promos, "Banorte", "Visa Cashback / Banorte", "https://www.banorte.com/Personal/Tarjeta-Favorita.html")
-    print(f"Banorte total: {len(banorte_promos)} promos")
+    process(scrape_banorte(), "Banorte", "Visa Cashback / Banorte", "https://www.banorte.com/Personal/Tarjeta-Favorita.html")
 
-    # All other banks
+    # All other banks (Klar, Nu Mexico) — skip dedicated/manual/blocked banks
     for source in BANK_SOURCES:
-        if source["bank"] == "Banorte":
+        if source["bank"] in SKIP_BANKS or source["bank"] in DEDICATED_BANKS:
             continue
         print(f"Scraping {source['bank']}...")
         text = scrape_page_playwright(source["url"], source.get("wait", 2000))
         print(f"Got {len(text)} chars from {source['bank']}")
+        if is_unchanged(source["bank"], text):
+            print(f"  {source['bank']}: sin cambios — 0 tokens")
+            continue
         promos = extract_promos_with_claude(text, source["bank"], source["card_name"])
         save_promos(promos, source["bank"], source["card_name"], source["url"])
+        mark_scraped(source["bank"], text)
 
     print("Scraper complete!")
 

@@ -12,6 +12,10 @@ import re
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=True)
 
+# Cheap model for the recommendation task (cashback ranking is simple).
+# Bump to "claude-sonnet-4-5" if you want richer reasoning.
+RECOMMEND_MODEL = "claude-haiku-4-5"
+
 app = FastAPI(
     title="CardMax MX API",
     description="Credit card optimization engine for Mexico/LATAM",
@@ -170,7 +174,7 @@ Respond with ONLY a JSON array, no markdown, no backticks, no extra text:
 Set is_best to true ONLY for the first (best) option. Include every card provided."""
 
     message = client.messages.create(
-        model="claude-sonnet-4-5",
+        model=RECOMMEND_MODEL,
         max_tokens=1500,
         messages=[{"role": "user", "content": prompt}]
     )
