@@ -12,7 +12,10 @@ from datetime import datetime
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=True)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # anon key — reads
+# service_role key — writes (bypasses RLS). Falls back to anon if unset so the
+# scraper keeps working before RLS is enabled.
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or SUPABASE_KEY
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 # Token optimization ---------------------------------------------------------
@@ -88,9 +91,11 @@ BANK_SOURCES = [
 
 def supabase_request(method: str, table: str, data=None, filters=None):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
+    # Reads use the anon key; writes use the service_role key (bypasses RLS).
+    key = SUPABASE_KEY if method == "GET" else SUPABASE_SERVICE_KEY
     headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "Prefer": "return=minimal"
     }
