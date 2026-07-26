@@ -108,11 +108,16 @@ _MSI_RE = re.compile(r"meses?\s+sin\s+inter", re.IGNORECASE)
 _NXM_RE = re.compile(r"(\d)\s*[x×]\s*(\d)", re.IGNORECASE)
 
 
-def parse_promo_benefit(promo: dict, amount: float) -> tuple:
-    """Return (benefit_pesos, label, kind) for a promo applied to `amount`.
+def promo_value(promo: dict) -> dict:
+    """Amount-independent value of a promo.
 
-    kind ∈ {"cashback", "descuento", "msi", "info", "none"}.
-    Math is exact; ambiguous prices ("combo $269") yield 0 pesos (informational).
+    Returns {"kind", "pct", "fixed", "label"}:
+      kind  ∈ cashback | descuento | 2x1 | msi | info | none
+      pct   = percentage benefit (cashback%, discount%, 2x1→50, 3x2→33) or None
+      fixed = fixed peso discount or None
+      label = human-readable label
+    This lets us compute exact pesos when an amount is given, or show the % as a
+    suggestion when the user is just browsing (no amount).
     """
     title = str(promo.get("title") or "")
     desc = str(promo.get("description") or "")
@@ -123,42 +128,49 @@ def parse_promo_benefit(promo: dict, amount: float) -> tuple:
     cb = promo.get("cashback_percent")
     if isinstance(cb, (int, float)) and cb > 0:
         pct = min(float(cb), 100.0)
-        return round(amount * pct / 100, 2), f"{pct:g}% cashback", "cashback"
+        return {"kind": "cashback", "pct": pct, "fixed": None, "label": f"{pct:g}% cashback"}
 
     # 2. Percentage discount in text (requires a literal %)
     pm = _PERCENT_RE.search(text)
     if pm:
         pct = min(float(pm.group(1)), 100.0)
         if pct > 0:
-            return round(amount * pct / 100, 2), f"{pct:g}% de descuento", "descuento"
+            return {"kind": "descuento", "pct": pct, "fixed": None, "label": f"{pct:g}% de descuento"}
 
     # 3. Fixed peso discount — only when clearly a discount, not a price
     if any(w in low for w in _DISCOUNT_WORDS) and not _PRICE_RE.search(low):
         fm = _FIXED_RE.search(text)
         if fm:
             fixed = float(fm.group(1).replace(",", ""))
-            benefit = min(fixed, amount)
-            return round(benefit, 2), f"${fixed:g} de descuento", "descuento"
+            return {"kind": "descuento", "pct": None, "fixed": fixed, "label": f"${fixed:g} de descuento"}
 
-    # 4. NxM offers (2x1, 3x2): real value. Estimated saving assumes the user
-    #    buys the qualifying quantity → saving = amount * (1 - m/n).
+    # 4. NxM offers (2x1, 3x2): estimated saving = 1 - m/n
     nm = _NXM_RE.search(low)
-    if nm and "mes" not in low:  # avoid matching things like "12x12 meses"
+    if nm and "mes" not in low:
         n, m = int(nm.group(1)), int(nm.group(2))
         if 1 <= m < n <= 5:
             pct = (1 - m / n) * 100
-            benefit = round(amount * (1 - m / n), 2)
-            return benefit, f"{n}x{m} (ahorro ≈{pct:.0f}% al comprar {n})", "2x1"
+            return {"kind": "2x1", "pct": pct, "fixed": None,
+                    "label": f"{n}x{m} (ahorro ≈{pct:.0f}% al comprar {n})"}
 
-    # 5. Meses sin intereses — real financing value but no direct cashback
+    # 5. Meses sin intereses — financing value, no direct cashback
     if _MSI_RE.search(low):
-        return 0.0, "Meses sin intereses", "msi"
+        return {"kind": "msi", "pct": None, "fixed": None, "label": "Meses sin intereses"}
 
     # 6. Applicable promo we couldn't quantify (e.g. a combo price)
     if title:
-        return 0.0, title.strip(), "info"
+        return {"kind": "info", "pct": None, "fixed": None, "label": title.strip()}
 
-    return 0.0, None, "none"
+    return {"kind": "none", "pct": None, "fixed": None, "label": None}
+
+
+def value_to_pesos(v: dict, amount: float) -> float:
+    """Exact peso benefit of a promo value for a given amount."""
+    if v["pct"] is not None:
+        return round(amount * v["pct"] / 100, 2)
+    if v["fixed"] is not None:
+        return round(min(v["fixed"], amount), 2)
+    return 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -196,11 +208,22 @@ def fetch_active_promos() -> list:
     return data if isinstance(data, list) else []
 
 
-def recommend(cards: list, description: str, amount: float) -> list:
-    """Rank the user's cards by the exact monetary benefit for this purchase.
+def _score(v: dict, amount: Optional[float]) -> float:
+    """Ranking score: exact pesos when an amount is given, else the % benefit."""
+    if amount is not None:
+        return value_to_pesos(v, amount)
+    return v["pct"] if v["pct"] is not None else -1.0
 
-    `cards` is a list of dicts (CreditCard.dict()). Returns a list of dicts
-    matching the RankedOption schema, best first.
+
+def recommend(cards: list, description: str, amount: Optional[float] = None) -> list:
+    """Rank the user's cards for a purchase.
+
+    With `amount`: ranks by exact peso benefit.
+    Without `amount` (browse mode): ranks by % benefit and returns the
+    percentages as suggestions — useful before deciding to buy.
+
+    `cards` is a list of dicts (CreditCard.dict()). Returns dicts matching the
+    RankedOption schema, best first.
     """
     cls = classify_purchase(description)
     category, merchant = cls["category"], cls["merchant"]
@@ -213,63 +236,62 @@ def recommend(cards: list, description: str, amount: float) -> list:
         name = card.get("name")
 
         base_rate = _base_rate(card, category)
-        base_benefit = round(amount * base_rate / 100, 2)
+        base_v = ({"kind": "cashback", "pct": base_rate, "fixed": None,
+                   "label": f"{base_rate:g}% cashback", "is_base": True}
+                  if base_rate > 0 else None)
 
-        # Best matching promo for this card's bank
-        best_promo_pesos = 0.0
-        best_promo_label = None
-        best_promo_kind = None
-        matched_promo_title = None
-
+        # All matching promos for this card's bank
+        promo_vals = []
         for p in all_promos:
-            if p.get("bank") != bank:
+            if p.get("bank") != bank or not _promo_matches(p, merchant):
                 continue
-            if not _promo_matches(p, merchant):
-                continue
-            pesos, label, kind = parse_promo_benefit(p, amount)
-            # Track the most valuable matching promo; remember an applicable one
-            # even if 0 pesos (msi/info) so the user still sees it.
-            if pesos > best_promo_pesos or (matched_promo_title is None and kind in ("msi", "info")):
-                if pesos >= best_promo_pesos:
-                    best_promo_pesos = pesos
-                    best_promo_label = label
-                    best_promo_kind = kind
-                matched_promo_title = label
+            v = promo_value(p)
+            v["is_base"] = False
+            promo_vals.append(v)
 
-        # Pick the better of base cashback vs promo
-        if best_promo_pesos > base_benefit:
-            benefit = best_promo_pesos
-            benefit_type = best_promo_kind or "descuento"
-            reason = f"{best_promo_label} en {merchant or 'este comercio'} con tu {name}."
-        elif base_benefit > 0:
-            benefit = base_benefit
-            benefit_type = "cashback"
-            reason = f"{base_rate:g}% de cashback de tu {name} para esta compra."
+        # Best matching promo (for display), ranked by score
+        best_promo = max(promo_vals, key=lambda v: _score(v, amount), default=None)
+
+        # Winner = best of {base cashback, best promo}
+        candidates = [v for v in (base_v, best_promo) if v]
+        winner = max(candidates, key=lambda v: _score(v, amount), default=None)
+
+        if winner is None:
+            benefit_type, benefit_label, benefit_pct = "none", None, None
+            reason = f"Tu {name} no ofrece beneficio para esta compra."
+            pesos = 0.0 if amount is not None else None
         else:
-            benefit = 0.0
-            benefit_type = best_promo_kind or "none"
-            if best_promo_kind == "msi":
-                reason = f"Sin cashback directo, pero ofrece {best_promo_label}."
-            elif matched_promo_title:
-                reason = f"Promo aplicable: {matched_promo_title}."
+            benefit_type = winner["kind"]
+            benefit_label = winner["label"]
+            benefit_pct = winner["pct"]
+            pesos = value_to_pesos(winner, amount) if amount is not None else None
+            where = merchant or "este comercio"
+            if winner.get("is_base"):
+                reason = f"{winner['label']} de tu {name} para esta compra."
             else:
-                reason = f"Tu {name} no ofrece beneficio para esta compra."
+                reason = f"{winner['label']} en {where} con tu {name}."
+
+        matched = best_promo["label"] if best_promo else None
 
         results.append({
             "card_name": name,
             "bank": bank,
             "reason": reason,
-            "estimated_cashback": round(benefit, 2),
+            "estimated_cashback": pesos,          # None in browse mode
+            "benefit_pct": benefit_pct,           # % suggestion
+            "benefit_label": benefit_label,       # e.g. "15% cashback"
             "benefit_type": benefit_type,
-            "matched_promo": matched_promo_title,
+            "matched_promo": matched,
             "merchant": merchant,
             "category": category,
-            "promo_alert": best_promo_label if best_promo_pesos > 0 else None,
+            "promo_alert": matched,
             "is_best": False,
         })
 
-    # Rank by exact pesos, then flag the winner
-    results.sort(key=lambda r: r["estimated_cashback"], reverse=True)
+    results.sort(key=lambda r: (
+        r["estimated_cashback"] if amount is not None else
+        (r["benefit_pct"] if r["benefit_pct"] is not None else -1)
+    ) or -1, reverse=True)
     if results:
         results[0]["is_best"] = True
     return results

@@ -39,14 +39,17 @@ class CreditCard(BaseModel):
 class RecommendRequest(BaseModel):
     cards: List[CreditCard] = Field(..., min_length=1, max_length=50)
     purchase_description: str = Field(..., min_length=1, max_length=200)
-    amount: float = Field(..., gt=0, le=1_000_000)
+    # Optional: omit to browse % suggestions before deciding to buy.
+    amount: Optional[float] = Field(None, gt=0, le=1_000_000)
 
 class RankedOption(BaseModel):
     card_name: str
     bank: str
     reason: str
-    estimated_cashback: float
-    benefit_type: str = "none"          # cashback | descuento | msi | info | none
+    estimated_cashback: Optional[float] = None   # None in browse mode (no amount)
+    benefit_pct: Optional[float] = None          # % suggestion
+    benefit_label: Optional[str] = None          # e.g. "15% cashback"
+    benefit_type: str = "none"          # cashback | descuento | 2x1 | msi | info | none
     matched_promo: Optional[str] = None
     merchant: Optional[str] = None
     category: Optional[str] = None

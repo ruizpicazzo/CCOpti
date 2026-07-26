@@ -70,16 +70,18 @@ export default function App() {
   }
 
   const handleRecommend = async () => {
-    if (!purchase || !amount) return
+    if (!purchase) return
     setLoading(true)
     setError(null)
     setResult(null)
     try {
       const selectedCards = cards.filter((_, i) => activeCards.includes(i))
+      const payload = { cards: selectedCards, purchase_description: purchase }
+      if (amount && parseFloat(amount) > 0) payload.amount = parseFloat(amount)
       const res = await fetch(`${API}/recommend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cards: selectedCards, purchase_description: purchase, amount: parseFloat(amount) })
+        body: JSON.stringify(payload)
       })
       if (!res.ok) throw new Error("Error del servidor")
       setResult(await res.json())
@@ -126,20 +128,21 @@ export default function App() {
           <>
             <div style={{ background: "#fff", borderRadius: 16, padding: 28, marginBottom: 20, boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}>
               <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 4 }}>¿Qué vas a comprar?</div>
-              <div style={{ fontSize: 14, color: "#888", marginBottom: 20 }}>Describe tu compra y te decimos qué tarjeta usar</div>
+              <div style={{ fontSize: 14, color: "#888", marginBottom: 20 }}>Describe tu compra. El monto es opcional: sin él te mostramos los % disponibles.</div>
               <input value={purchase} onChange={e => setPurchase(e.target.value)}
-                placeholder="ej. cena en restaurante, gasolina, compras en Walmart..."
+                placeholder="ej. cine en Cinépolis, gasolina, compras en Amazon..."
                 style={{ width: "100%", padding: "12px 16px", borderRadius: 10, border: "1.5px solid #e0e0e0", fontSize: 15, marginBottom: 12, outline: "none", boxSizing: "border-box" }}
                 onKeyDown={e => e.key === "Enter" && handleRecommend()} />
               <div style={{ display: "flex", gap: 12 }}>
                 <div style={{ position: "relative", flex: 1 }}>
                   <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "#888" }}>$</span>
-                  <input value={amount} onChange={e => setAmount(e.target.value)} placeholder="Monto en MXN" type="number"
-                    style={{ width: "100%", padding: "12px 16px 12px 28px", borderRadius: 10, border: "1.5px solid #e0e0e0", fontSize: 15, outline: "none", boxSizing: "border-box" }} />
+                  <input value={amount} onChange={e => setAmount(e.target.value)} placeholder="Monto en MXN (opcional)" type="number"
+                    style={{ width: "100%", padding: "12px 16px 12px 28px", borderRadius: 10, border: "1.5px solid #e0e0e0", fontSize: 15, outline: "none", boxSizing: "border-box" }}
+                    onKeyDown={e => e.key === "Enter" && handleRecommend()} />
                 </div>
-                <button onClick={handleRecommend} disabled={loading || !purchase || !amount}
-                  style={{ padding: "12px 24px", background: loading ? "#ccc" : "#1a1a2e", color: "#fff", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: loading ? "not-allowed" : "pointer", whiteSpace: "nowrap" }}>
-                  {loading ? "Analizando..." : "¿Qué tarjeta uso?"}
+                <button onClick={handleRecommend} disabled={loading || !purchase}
+                  style={{ padding: "12px 24px", background: (loading || !purchase) ? "#ccc" : "#1a1a2e", color: "#fff", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: (loading || !purchase) ? "not-allowed" : "pointer", whiteSpace: "nowrap" }}>
+                  {loading ? "Analizando..." : (amount ? "¿Qué tarjeta uso?" : "Ver mis opciones")}
                 </button>
               </div>
             </div>
@@ -158,7 +161,9 @@ export default function App() {
                 ) : null}
                 {result.recommendations.map((r, i) => {
                   const color = BANK_COLORS[r.bank] || "#1a1a2e"
+                  const hasAmount = r.estimated_cashback !== null && r.estimated_cashback !== undefined
                   const benefit = Number(r.estimated_cashback || 0)
+                  const hasBenefit = hasAmount ? benefit > 0 : (r.benefit_pct != null || r.benefit_type !== "none")
                   const BENEFIT_BADGE = {
                     cashback: { label: "Cashback", bg: "#dcfce7", fg: "#16a34a" },
                     descuento: { label: "Descuento", bg: "#dbeafe", fg: "#1d4ed8" },
@@ -193,7 +198,7 @@ export default function App() {
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: r.is_best ? 18 : 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
                             {r.card_name}
-                            {badge && benefit > 0 && (
+                            {badge && hasBenefit && (
                               <span style={{ background: badge.bg, color: badge.fg, fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 99 }}>
                                 {badge.label}
                               </span>
@@ -202,10 +207,21 @@ export default function App() {
                           <div style={{ fontSize: 13, color: "#888" }}>{r.bank}</div>
                         </div>
                         <div style={{ textAlign: "right" }}>
-                          <div style={{ fontSize: r.is_best ? 24 : 18, fontWeight: 700, color: benefit > 0 ? (r.is_best ? "#16a34a" : "#555") : "#bbb" }}>
-                            ${benefit.toFixed(2)}
-                          </div>
-                          <div style={{ fontSize: 11, color: "#aaa" }}>beneficio est.</div>
+                          {hasAmount ? (
+                            <>
+                              <div style={{ fontSize: r.is_best ? 24 : 18, fontWeight: 700, color: benefit > 0 ? (r.is_best ? "#16a34a" : "#555") : "#bbb" }}>
+                                ${benefit.toFixed(2)}
+                              </div>
+                              <div style={{ fontSize: 11, color: "#aaa" }}>beneficio est.</div>
+                            </>
+                          ) : (
+                            <>
+                              <div style={{ fontSize: r.is_best ? 22 : 17, fontWeight: 700, color: hasBenefit ? (r.is_best ? "#16a34a" : "#555") : "#bbb" }}>
+                                {r.benefit_pct != null ? `${r.benefit_pct}%` : (hasBenefit ? "✓" : "—")}
+                              </div>
+                              <div style={{ fontSize: 11, color: "#aaa" }}>{r.benefit_pct != null ? "disponible" : "beneficio"}</div>
+                            </>
+                          )}
                         </div>
                       </div>
                       <div style={{ fontSize: 13, color: "#555", lineHeight: 1.5, marginBottom: r.matched_promo ? 8 : 0 }}>
