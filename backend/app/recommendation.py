@@ -104,6 +104,8 @@ _DISCOUNT_WORDS = ("descuento", "off", "de regalo", "bonific")
 # Uses word boundaries so "hasta $120" does NOT count as a price.
 _PRICE_RE = re.compile(r"\b(combo|paquete)\b|\b(por|desde|a)\s+\$", re.IGNORECASE)
 _MSI_RE = re.compile(r"meses?\s+sin\s+inter", re.IGNORECASE)
+# "2x1", "3x2", "2X1", "2 x 1" — pay M for N units. Estimated saving = 1 - M/N.
+_NXM_RE = re.compile(r"(\d)\s*[x×]\s*(\d)", re.IGNORECASE)
 
 
 def parse_promo_benefit(promo: dict, amount: float) -> tuple:
@@ -138,11 +140,21 @@ def parse_promo_benefit(promo: dict, amount: float) -> tuple:
             benefit = min(fixed, amount)
             return round(benefit, 2), f"${fixed:g} de descuento", "descuento"
 
-    # 4. Meses sin intereses — real financing value but no direct cashback
+    # 4. NxM offers (2x1, 3x2): real value. Estimated saving assumes the user
+    #    buys the qualifying quantity → saving = amount * (1 - m/n).
+    nm = _NXM_RE.search(low)
+    if nm and "mes" not in low:  # avoid matching things like "12x12 meses"
+        n, m = int(nm.group(1)), int(nm.group(2))
+        if 1 <= m < n <= 5:
+            pct = (1 - m / n) * 100
+            benefit = round(amount * (1 - m / n), 2)
+            return benefit, f"{n}x{m} (ahorro ≈{pct:.0f}% al comprar {n})", "2x1"
+
+    # 5. Meses sin intereses — real financing value but no direct cashback
     if _MSI_RE.search(low):
         return 0.0, "Meses sin intereses", "msi"
 
-    # 5. Applicable promo we couldn't quantify (e.g. a combo price)
+    # 6. Applicable promo we couldn't quantify (e.g. a combo price)
     if title:
         return 0.0, title.strip(), "info"
 

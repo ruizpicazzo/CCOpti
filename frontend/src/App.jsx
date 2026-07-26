@@ -162,6 +162,7 @@ export default function App() {
                   const BENEFIT_BADGE = {
                     cashback: { label: "Cashback", bg: "#dcfce7", fg: "#16a34a" },
                     descuento: { label: "Descuento", bg: "#dbeafe", fg: "#1d4ed8" },
+                    "2x1": { label: "2x1", bg: "#ffe4e6", fg: "#be123c" },
                     msi: { label: "Meses sin intereses", bg: "#fef9c3", fg: "#854d0e" },
                     info: { label: "Promo aplicable", bg: "#f3e8ff", fg: "#7e22ce" },
                   }
