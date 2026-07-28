@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from app.routers import promos
 from app import recommendation
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from pathlib import Path
 from dotenv import load_dotenv
+from collections import defaultdict, deque
+import os
+import time
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=True)
 
@@ -15,14 +18,39 @@ app = FastAPI(
     version="0.2.0"
 )
 
+# Allowed origins come from env in production (comma-separated), plus local dev.
+_env_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+ALLOWED_ORIGINS = _env_origins or ["http://localhost:3000", "http://localhost:5173", "http://localhost:5174"]
+
 app.include_router(promos.router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Simple in-memory rate limiter (per client IP) -------------------------
+RATE_LIMIT = int(os.getenv("RATE_LIMIT", "20"))     # requests
+RATE_WINDOW = int(os.getenv("RATE_WINDOW", "60"))   # seconds
+_hits: dict = defaultdict(deque)
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+def rate_limit(request: Request):
+    ip = _client_ip(request)
+    now = time.time()
+    dq = _hits[ip]
+    while dq and dq[0] < now - RATE_WINDOW:
+        dq.popleft()
+    if len(dq) >= RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Demasiadas solicitudes. Intenta de nuevo en un minuto.")
+    dq.append(now)
 
 # --- Data Models ---
 
@@ -123,12 +151,13 @@ def get_sample_cards():
     return {"cards": SAMPLE_CARDS}
 
 @app.post("/recommend", response_model=RecommendResponse)
-def recommend_card(request: RecommendRequest):
+def recommend_card(request: RecommendRequest, http_request: Request):
     """Rank the user's cards by the EXACT monetary benefit for this purchase.
 
     The LLM only classifies the purchase (category + merchant). All money math
     is computed deterministically in app.recommendation against live promos.
     """
+    rate_limit(http_request)
     try:
         cards = [c.model_dump() for c in request.cards]
         ranked = recommendation.recommend(

@@ -1,0 +1,27 @@
+# Render.com deployment for the CardMax API (backend only).
+# The scraper does NOT run here — it runs on GitHub Actions (see .github/workflows).
+services:
+  - type: web
+    name: cardmax-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # set in the Render dashboard (secret)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false          # e.g. https://cardmax.vercel.app
+      - key: RATE_LIMIT
+        value: "20"
+      - key: RATE_WINDOW
+        value: "60"

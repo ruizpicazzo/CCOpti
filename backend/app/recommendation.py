@@ -17,6 +17,9 @@ from app.routers.promos import supabase_get
 # Cheap model: classification only, no arithmetic.
 CLASSIFY_MODEL = "claude-haiku-4-5"
 
+# In-memory cache of classifications: identical purchase text costs 0 tokens.
+_classify_cache: dict = {}
+
 ALLOWED_CATEGORIES = {
     "dining", "supermarket", "gas", "online", "travel",
     "general", "technology", "entertainment", "sports",
@@ -51,6 +54,10 @@ def classify_purchase(description: str) -> dict:
     these two constrained fields (prompt-injection mitigation).
     """
     safe = (description or "")[:200]
+    cache_key = safe.strip().lower()
+    if cache_key in _classify_cache:          # identical query → 0 tokens
+        return dict(_classify_cache[cache_key])
+
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key or not safe.strip():
         return {"category": "general", "merchant": None}
@@ -91,7 +98,12 @@ Reglas:
         merchant = merchant.strip()[:60]
     else:
         merchant = None
-    return {"category": category, "merchant": merchant}
+
+    result = {"category": category, "merchant": merchant}
+    if len(_classify_cache) > 5000:           # simple bound
+        _classify_cache.clear()
+    _classify_cache[cache_key] = result
+    return dict(result)
 
 
 # --------------------------------------------------------------------------- #
